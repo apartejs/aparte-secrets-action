@@ -1,0 +1,61 @@
+name: test
+on: [push, pull_request]
+
+# The action on two throwaway folders written here: one with a made-up password, one without.
+# No secret-shaped string (provider formats) lives in this repository.
+jobs:
+  finds:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: A folder with a password
+        shell: bash
+        run: |
+          mkdir -p fixture
+          printf 'Deploy notes\n\nthe wifi password is Sunflower77# for the guests\n' > fixture/notes.md
+      - id: scan
+        uses: ./
+        with:
+          paths: fixture
+          sarif: "false"
+          fail: "false"
+      - name: One finding, value never in the report
+        shell: bash
+        run: |
+          test "${{ steps.scan.outputs.findings }}" = "1"
+          ! grep -q Sunflower "${{ steps.scan.outputs.sarif-file }}"
+
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: A folder without a secret
+        run: |
+          mkdir -p fixture
+          printf 'Photosynthesis turns light into chemical energy.\n' > fixture/notes.md
+      - id: scan
+        uses: ./
+        with:
+          paths: fixture
+          sarif: "false"
+      - run: test "${{ steps.scan.outputs.findings }}" = "0"
+
+  fails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          mkdir -p fixture
+          printf 'the wifi password is Sunflower77# for the guests\n' > fixture/notes.md
+      - id: scan
+        uses: ./
+        continue-on-error: true
+        with:
+          paths: fixture
+          sarif: "false"
+      - name: The job fails by default when something is found
+        run: test "${{ steps.scan.outcome }}" = "failure"

@@ -1,0 +1,72 @@
+name: aparte-secrets scan
+description: Find passwords, API keys, tokens and private keys with a 196 KB model, not patterns. Runs on the runner, no network, no key.
+author: apartejs
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  paths:
+    description: Files or folders to scan, separated by spaces. Empty = every file git tracks.
+    default: ""
+  min-score:
+    description: Report only spans the model scores at least this (0 to 1).
+    default: "0.5"
+  config:
+    description: Configuration file (ignored values, excluded paths). Default .aparte-secrets.json when present.
+    default: ""
+  baseline:
+    description: Baseline file of accepted findings (SHA-256 fingerprints, never the values); only new findings are reported.
+    default: ""
+  sarif:
+    description: Upload the findings to GitHub code scanning (needs `security-events write`; public repositories, or GitHub Advanced Security).
+    default: "true"
+  fail:
+    description: Fail the job when something is found.
+    default: "true"
+  version:
+    description: Version of @aparte/secrets-cli to run.
+    default: "1.1.1"
+
+outputs:
+  findings:
+    description: Number of possible secrets found.
+    value: ${{ steps.scan.outputs.findings }}
+  sarif-file:
+    description: Path of the SARIF report.
+    value: ${{ steps.scan.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - id: scan
+      shell: bash
+      env:
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_MIN_SCORE: ${{ inputs.min-score }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        sarif="$RUNNER_TEMP/aparte-secrets.sarif"
+        args=(--format sarif --output "$sarif" --min-score "$INPUT_MIN_SCORE" --no-fail)
+        [ -n "$INPUT_CONFIG" ] && args+=(--config "$INPUT_CONFIG")
+        [ -n "$INPUT_BASELINE" ] && args+=(--baseline "$INPUT_BASELINE")
+        read -r -a paths <<< "$INPUT_PATHS"
+        npx --yes "@aparte/secrets-cli@$INPUT_VERSION" "${paths[@]}" "${args[@]}"
+        # one annotation per finding (on the pull request's diff), and a summary; values are never printed
+        node "$GITHUB_ACTION_PATH/summary.mjs" "$sarif"
+        echo "sarif-file=$sarif" >> "$GITHUB_OUTPUT"
+
+    - if: inputs.sarif == 'true' && always() && steps.scan.outputs.sarif-file != ''
+      uses: github/codeql-action/upload-sarif@v4
+      continue-on-error: true
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        category: aparte-secrets
+
+    - if: inputs.fail == 'true' && steps.scan.outputs.findings != '0'
+      shell: bash
+      run: |
+        echo "::error::aparte-secrets found ${{ steps.scan.outputs.findings }} possible secret(s): see the annotations, or ignore one with an \`aparte-secrets:ignore\` comment or a baseline."
+        exit 1
